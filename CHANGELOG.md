@@ -1,6 +1,45 @@
 
 # Change Log
 
+## v5.2.0 (2020/06/07)
+- **New:** Support for [request options](https://github.com/simov/grant#misc-request)
+- **New:** Official support for 2 new providers: `apple`, `garmin`
+- **Deprecate:** Meta modules for [Express, Koa and Hapi](https://github.com/simov/grant/blob/master/MIGRATION.md#deprecate-meta-modules)
+
+## v5.1.1 (2020/05/25)
+- **Fix:** The upcoming Grant constructor
+
+## v5.1.0 (2020/05/25)
+- **New:** Support for `private_key_jwt` client authentication
+- **New:** `grant-profile` was deprecated as standalone module and is now [embedded](https://github.com/simov/grant#profile) into Grant
+- **New:** Increase the random `state` and `nonce` size
+- **New:** Official support for 4 new providers: `cas`, `cognito`, `fusionauth`, `logingov`
+
+## v5.0.1 (2020/05/01)
+- **Fix:** Fixed the path matching regexp for Express and Koa
+
+## v5.0.0 (2020/04/18)
+- **Breaking:** Drop support for Node v4 and v6
+- **Breaking:** Return `id_token` as string by default
+- **Breaking:** Change in the `response` configuration
+- **New:** `origin` and `prefix` configuration
+- **Deprecate:** Koa v1 and Hapi <= v16
+- **Deprecate:** `protocol`, `host`, and `path` configuration
+- **[Migration Guide: from v4 to v5](https://github.com/simov/grant/blob/master/MIGRATION.md)**
+
+## v4.7.0 (2020/01/26)
+- **New:** [PKCE](https://github.com/simov/grant/commit/3b04eb69a278165ae9be7ba7a06e8b85da21c5e5) support
+- **New:** [input state](https://github.com/simov/grant/commit/3b04eb69a278165ae9be7ba7a06e8b85da21c5e5) overrides
+- **New:** [output state](https://github.com/simov/grant/commit/3b04eb69a278165ae9be7ba7a06e8b85da21c5e5) transport
+- **New:** user-agent header is set on all internal requests
+
+## v4.6.6 (2020/01/01)
+- **Fix:** Regression about race condition for [slow session stores](https://github.com/simov/grant/pull/122) in Express middleware
+- **New:** Official support for 2 new providers: `livechat` and `zeit`
+
+## v4.6.5 (2019/12/07)
+- **Fix:** Support for `instagram` Graph API
+
 ## v4.6.4 (2019/10/27)
 - **New:** Official support for 2 new providers: `line` and `naver`
 - **Fix:** Updated 4 providers: `clio`, `concur`, `familysearch` and `fitbit`

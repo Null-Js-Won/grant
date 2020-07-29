@@ -4,13 +4,25 @@
   "access_url",
   "oauth",
   "scope_delimiter",
-  "custom_parameters",
+  "token_endpoint_auth_method",
+  "token_endpoint_auth_signing_alg",
+
+  "origin",
+  "prefix",
+  "state",
+  "nonce",
+  "pkce",
+  "response",
+  "transport",
+  "callback",
+  "overrides",
+  "dynamic",
+  "public_key",
+  "private_key",
 
   "protocol",
   "host",
   "path",
-  "transport",
-  "state",
 
   "key",
   "secret",
@@ -21,15 +33,8 @@
   "scope",
   "custom_params",
   "subdomain",
-  "nonce",
-  "callback",
-  "dynamic",
-  "overrides",
-  "response",
-  "token_endpoint_auth_method",
 
   "name",
   "redirect_uri",
-
   "profile_url"
 ]

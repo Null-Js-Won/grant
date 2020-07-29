@@ -1,451 +1,351 @@
 
 var t = require('assert')
-var http = require('http')
-var qs = require('qs')
-var express = require('express')
-var bodyParser = require('body-parser')
-var Grant = require('../../').express()
-var oauth1 = require('../../lib/flow/oauth1')
+
+var request = require('request-compose').extend({
+  Request: {cookie: require('request-cookie').Request},
+  Response: {cookie: require('request-cookie').Response},
+}).client
+
 var oauth = require('../../config/oauth')
-var reserved = require('../../config/reserved')
+
+var Provider = require('../util/provider'), provider
+var Client = require('../util/client'), client
 
 
 describe('oauth1', () => {
-  var url = (path) => `http://localhost:5000${path}`
-
-  describe('success', () => {
-    var server
-
-    before((done) => {
-      server = http.createServer()
-      server.on('request', (req, res) => {
-        res.writeHead(200, {'content-type': 'application/x-www-form-urlencoded'})
-        if (req.url === '/request_url') {
-          var data = req.headers.authorization
-            .replace('OAuth ', '').replace(/"/g, '').replace(/,/g, '&')
-          res.end(data)
-        }
-        else if (req.url === '/access_url') {
-          var data = qs.stringify({
-            oauth_token: 'token', oauth_token_secret: 'secret', some: 'data'
-          })
-        }
-        res.end(data)
-      })
-      server.listen(5000, done)
-    })
-
-    it('request', async () => {
-      var provider = {
-        request_url: url('/request_url'),
-        redirect_uri: '/redirect_uri',
-        key: 'key'
+  before(async () => {
+    provider = await Provider({flow: 'oauth1'})
+    client = await Client({
+      test: 'handlers',
+      handler: 'express',
+      config: {
+        defaults: {
+          origin: 'http://localhost:5001',
+          callback: '/',
+        },
+        ...Object.keys(oauth).reduce((all, name) => (all[name] = {
+          request_url: provider.url(`/${name}/request_url`),
+          authorize_url: provider.url(`/${name}/authorize_url`),
+          access_url: provider.url(`/${name}/access_url`),
+          dynamic: true,
+        }, all), {})
       }
-      var {body} = await oauth1.request(provider)
-      t.equal(body.oauth_callback, '/redirect_uri')
-      t.equal(body.oauth_consumer_key, 'key')
-    })
-
-    it('authorize', async () => {
-      var provider = {authorize_url: '/authorize_url'}
-      var url = await oauth1.authorize(provider, {oauth_token: 'token'})
-      t.deepEqual(
-        qs.parse(url.replace('/authorize_url?', '')),
-        {oauth_token: 'token'}
-      )
-    })
-
-    it('access', async () => {
-      var provider = {access_url: url('/access_url'), oauth: 1}
-      var authorize = {oauth_token: 'token'}
-      var data = await oauth1.access(provider, {}, authorize)
-      t.deepEqual(
-        data,
-        {
-          access_token: 'token',
-          access_secret: 'secret',
-          raw: {
-            oauth_token: 'token',
-            oauth_token_secret: 'secret',
-            some: 'data'
-          }
-        }
-      )
-    })
-
-    after((done) => {
-      server.close(done)
     })
   })
 
-  describe('error', () => {
-    var server
+  after(async () => {
+    await client.close()
+    await provider.close()
+  })
 
-    before((done) => {
-      server = http.createServer()
-      server.on('request', (req, res) => {
-        res.writeHead(500, {'content-type': 'application/x-www-form-urlencoded'})
-        res.end(qs.stringify({error: 'invalid'}))
+  afterEach(() => {
+    provider.on.request = () => {}
+    provider.on.authorize = () => {}
+    provider.on.access = () => {}
+  })
+
+  describe('success', () => {
+    it('twitter', async () => {
+      provider.on.request = ({url, headers, query, form, oauth}) => {
+        t.equal(url, '/twitter/request_url')
+        t.ok(/^simov\/grant/.test(headers['user-agent']))
+        t.equal(typeof query, 'object')
+        t.equal(typeof form, 'object')
+        t.equal(oauth.oauth_signature_method, 'HMAC-SHA1')
+        t.equal(oauth.oauth_consumer_key, 'key')
+        t.equal(oauth.oauth_callback, 'http://localhost:5001/connect/twitter/callback')
+      }
+      provider.on.authorize = ({url, headers, query}) => {
+        t.equal(url, '/twitter/authorize_url?oauth_token=token')
+        t.equal(typeof headers, 'object')
+        t.deepEqual(query, {oauth_token: 'token'})
+      }
+      provider.on.access = ({url, headers, query, form, oauth}) => {
+        t.equal(url, '/twitter/access_url')
+        t.ok(/^simov\/grant/.test(headers['user-agent']))
+        t.equal(typeof query, 'object')
+        t.equal(typeof form, 'object')
+        t.equal(oauth.oauth_signature_method, 'HMAC-SHA1')
+        t.equal(oauth.oauth_consumer_key, 'key')
+        t.equal(oauth.oauth_token, 'token')
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {key: 'key'},
+        cookie: {},
       })
-      server.listen(5000, done)
-    })
-
-    it('request - request error', async () => {
-      var provider = {request_url: 'compose:5000'}
-      try {
-        await oauth1.request(provider)
-      }
-      catch (err) {
-        t.ok(/^Protocol "compose:" not supported\. Expected "http:"/.test(err.error))
-      }
-    })
-    it('request - response error', async () => {
-      var provider = {request_url: url('/request_url')}
-      oauth1.request(provider).catch((err) => {
-        t.deepEqual(err.error, {error: 'invalid'})
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret', user_id: 'id'}
       })
     })
+  })
 
-    it('authorize - mising oauth_token - response error', async () => {
-      var provider = {}
-      var request = {error: 'invalid'}
-      try {
-        await oauth1.authorize(provider, request)
+  describe('subdomain', () => {
+    it('freshbooks', async () => {
+      provider.on.request = ({url, headers, query, form, oauth}) => {
+        t.ok(url.startsWith('/freshbooks/request_url'))
       }
-      catch (err) {
-        t.deepEqual(
-          err.error,
-          {error: 'invalid'}
-        )
+      provider.on.authorize = ({url, headers, query}) => {
+        t.ok(url.startsWith('/freshbooks/authorize_url'))
       }
-    })
-    it('authorize - mising oauth_token - empty response', async () => {
-      var provider = {}
-      var request = {}
-      try {
-        await oauth1.authorize(provider, request)
+      provider.on.access = ({url, headers, query, form, oauth}) => {
+        t.ok(url.startsWith('/freshbooks/access_url'))
       }
-      catch (err) {
-        t.deepEqual(
-          err.error,
-          {error: 'Grant: OAuth1 missing oauth_token parameter'}
-        )
-      }
-    })
-
-    it('access - mising oauth_token - response error', async () => {
-      var provider = {}
-      var authorize = {error: 'invalid'}
-      try {
-        await oauth1.access(provider, {}, authorize)
-      }
-      catch (err) {
-        t.deepEqual(err.error, {error: 'invalid'})
-      }
-    })
-    it('access - mising oauth_token - empty response', async () => {
-      var provider = {}
-      var authorize = {}
-      try {
-        await oauth1.access(provider, {}, authorize)
-      }
-      catch (err) {
-        t.deepEqual(
-          err,
-          {error: 'Grant: OAuth1 missing oauth_token parameter'}
-        )
-      }
-    })
-    it('access - request error', async () => {
-      var provider = {access_url: 'compose:5000'}
-      var authorize = {oauth_token: 'token'}
-      try {
-        await oauth1.access(provider, {}, authorize)
-      }
-      catch (err) {
-        t.ok(/^Protocol "compose:" not supported\. Expected "http:"/.test(err.error))
-      }
-    })
-    it('access - response error', async () => {
-      var provider = {access_url: url('/access_url')}
-      var authorize = {oauth_token: 'token'}
-      try {
-        await oauth1.access(provider, {}, authorize)
-      }
-      catch (err) {
-        t.deepEqual(err.error, {error: 'invalid'})
-      }
-    })
-
-    after((done) => {
-      server.close(done)
+      var {body: {response}} = await request({
+        url: client.url('/connect/freshbooks'),
+        qs: {
+          request_url: provider.url('/[subdomain]/request_url'),
+          authorize_url: provider.url('/[subdomain]/authorize_url'),
+          access_url: provider.url('/[subdomain]/access_url'),
+          subdomain: 'freshbooks',
+        },
+        cookie: {},
+      })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
+      })
     })
   })
 
   describe('custom', () => {
-    describe('request', () => {
-      var grant, server
-
-      before((done) => {
-        var config = {
-          discogs: {}, etsy: {}, freshbooks: {}, getpocket: {},
-          linkedin: {}
-        }
-        grant = Grant(config)
-        var app = express()
-        app.use(bodyParser.urlencoded({extended: true}))
-        app.use(grant)
-
-        app.post('/request_url', (req, res) => {
-          res.writeHead(200, {'content-type': 'application/x-www-form-urlencoded'})
-          res.end(qs.stringify({
-            agent: req.headers['user-agent'],
-            oauth: req.headers.authorization,
-            scope: req.query.scope,
-            accept: req.headers['x-accept'],
-            form: req.body
-          }))
-        })
-        server = app.listen(5000, done)
+    it('querystring scope - request - etsy', async () => {
+      provider.on.request = ({query}) => {
+        t.deepEqual(query, {scope: 'email_r profile_r'})
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/etsy'),
+        qs: {scope: 'email_r profile_r'},
+        cookie: {},
       })
-
-      describe('querystring scope', () => {
-        it('etsy', async () => {
-          grant.config.etsy.request_url = url('/request_url')
-          grant.config.etsy.scope = 'email_r profile_r'
-          var {body} = await oauth1.request(grant.config.etsy)
-          t.equal(body.scope, 'email_r profile_r')
-        })
-        it('linkedin', async () => {
-          grant.config.linkedin.request_url = url('/request_url')
-          grant.config.linkedin.scope = 'scope1,scope2'
-          var {body} = await oauth1.request(grant.config.linkedin)
-          t.equal(body.scope, 'scope1,scope2')
-        })
-      })
-
-      describe('user-agent', () => {
-        it('discogs', async () => {
-          grant.config.discogs.request_url = url('/request_url')
-          var {body} = await oauth1.request(grant.config.discogs)
-          t.equal(body.agent, 'Grant')
-        })
-      })
-
-      describe('signature_method', () => {
-        it('freshbooks', async () => {
-          grant.config.freshbooks.request_url = url('/request_url')
-          var {body} = await oauth1.request(grant.config.freshbooks)
-          t.ok(/oauth_signature_method="PLAINTEXT"/.test(body.oauth))
-        })
-      })
-
-      describe('getpocket', () => {
-        it('access', async () => {
-          grant.config.getpocket.request_url = url('/request_url')
-          grant.config.getpocket.key = 'key'
-          grant.config.getpocket.state = 'state'
-          var {body} = await oauth1.request(grant.config.getpocket)
-          t.deepEqual(body, {
-            accept: 'application/x-www-form-urlencoded',
-            form: {consumer_key: 'key', state: 'state'}
-          })
-        })
-      })
-
-      describe('subdomain', () => {
-        it('freshbooks', async () => {
-          grant.config.freshbooks.request_url = url('/[subdomain]')
-          grant.config.freshbooks.subdomain = 'request_url'
-          var {body} = await oauth1.request(grant.config.freshbooks)
-          t.ok(/OAuth/.test(body.oauth))
-        })
-      })
-
-      after((done) => {
-        server.close(done)
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
       })
     })
 
-    describe('authorize', () => {
-      describe('custom_parameters', () => {
-        var config = {}
-        for (var key in oauth) {
-          var provider = oauth[key]
-          if (provider.oauth === 1 && provider.custom_parameters) {
-            config[key] = {}
-            provider.custom_parameters.forEach((param, index) => {
-              if (reserved.includes(param)) {
-                config[key].custom_params = config[key].custom_params || {}
-                config[key].custom_params[param] = index.toString()
-              }
-              else {
-                config[key][param] = index.toString()
-              }
-            })
-          }
-        }
-        var grant = Grant(config)
-
-        Object.keys(config).forEach((key) => {
-          it(key, async () => {
-            var url = await oauth1.authorize(grant.config[key], {oauth_token: 'token'})
-            var query = qs.parse(url.split('?')[1])
-            delete query.oauth_token
-            if (config[key].custom_params) {
-              Object.assign(config[key], config[key].custom_params)
-              delete config[key].custom_params
-            }
-            t.deepEqual(query, config[key])
-          })
-        })
+    it('signature_method - request/access - freshbooks', async () => {
+      provider.on.request = ({headers}) => {
+        t.ok(/oauth_signature_method="PLAINTEXT"/.test(headers.authorization))
+      }
+      provider.on.access = ({headers}) => {
+        t.ok(/oauth_signature_method="PLAINTEXT"/.test(headers.authorization))
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/freshbooks'),
+        cookie: {},
       })
-
-      describe('scope', () => {
-        var grant = Grant({
-          flickr: {scope: ['1', '2']},
-          ravelry: {scope: ['1', '2']},
-          trello: {scope: ['1', '2']},
-        })
-        it('flickr', async () => {
-          var url = await oauth1.authorize(grant.config.flickr, {oauth_token: 'token'})
-          var query = qs.parse(url.split('?')[1])
-          t.equal(query.perms, '1,2')
-        })
-        it('ravelry', async () => {
-          var url = await oauth1.authorize(grant.config.ravelry, {oauth_token: 'token'})
-          var query = qs.parse(url.split('?')[1])
-          t.equal(query.scope, '1 2')
-        })
-        it('trello', async () => {
-          var url = await oauth1.authorize(grant.config.trello, {oauth_token: 'token'})
-          var query = qs.parse(url.split('?')[1])
-          t.equal(query.scope, '1,2')
-        })
-      })
-
-      describe('oauth_callback', () => {
-        it('tripit', async () => {
-          var grant = Grant({tripit: {redirect_uri: url('/connect/tripit/callback')}})
-          var uri = await oauth1.authorize(grant.config.tripit, {oauth_token: 'token'})
-          var query = qs.parse(uri.split('?')[1])
-          t.equal(query.oauth_callback, url('/connect/tripit/callback'))
-        })
-      })
-
-      describe('getpocket', () => {
-        it('authorize', async () => {
-          var grant = Grant({getpocket: {}})
-          var url = await oauth1.authorize(grant.config.getpocket, {code: 'code'})
-          var query = qs.parse(url.split('?')[1])
-          t.deepEqual(query, {request_token: 'code'})
-        })
-      })
-
-      describe('subdomain', () => {
-        it('freshbooks', async () => {
-          var grant = Grant({freshbooks: {subdomain: 'grant'}})
-          var url = await oauth1.authorize(grant.config.freshbooks, {oauth_token: 'token'})
-          t.equal(url.indexOf('https://grant.freshbooks.com'), 0)
-        })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
       })
     })
 
-    describe('access', () => {
-      var grant, server
-
-      before((done) => {
-        var config = {
-          discogs: {}, freshbooks: {}, getpocket: {}, goodreads: {}, intuit: {},
-          tripit: {}
-        }
-        grant = Grant(config)
-        var app = express()
-        app.use(bodyParser.urlencoded({extended: true}))
-        app.use(grant)
-
-        app.post('/access_url', (req, res) => {
-          res.writeHead(200, {'content-type': 'application/x-www-form-urlencoded'})
-          res.end(qs.stringify({
-            agent: req.headers['user-agent'],
-            oauth: req.headers.authorization,
-            accept: req.headers['x-accept'],
-            form: req.body
-          }))
-        })
-        server = app.listen(5000, done)
+    it('scope - authorize - flickr', async () => {
+      provider.on.authorize = ({query}) => {
+        t.deepEqual(query, {perms: 'a,b', oauth_token: 'token'})
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/flickr'),
+        qs: {scope: 'a,b'},
+        cookie: {},
       })
-
-      describe('user-agent', () => {
-        it('discogs', async () => {
-          grant.config.discogs.access_url = url('/access_url')
-          var authorize = {oauth_token: 'token'}
-          var data = await oauth1.access(grant.config.discogs, {}, authorize)
-          t.equal(data.raw.agent, 'Grant')
-        })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
       })
+    })
 
-      describe('signature_method', () => {
-        it('freshbooks', async () => {
-          grant.config.freshbooks.access_url = url('/access_url')
-          var authorize = {oauth_token: 'token'}
-          var data = await oauth1.access(grant.config.freshbooks, {}, authorize)
-          t.ok(/oauth_signature_method="PLAINTEXT"/.test(data.raw.oauth))
-        })
+    it('scope - authorize - ravelry', async () => {
+      provider.on.authorize = ({query}) => {
+        t.deepEqual(query, {scope: 'a b', oauth_token: 'token'})
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/ravelry'),
+        qs: {scope: 'a b'},
+        cookie: {},
       })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
+      })
+    })
 
-      describe('oauth_verifier', () => {
-        it('goodreads', async () => {
-          grant.config.goodreads.access_url = url('/access_url')
-          var authorize = {oauth_token: 'token'}
-          var data = await oauth1.access(grant.config.goodreads, {}, authorize)
-          t.ok(!/verifier/.test(data.raw.oauth))
-        })
-        it('tripit', async () => {
-          grant.config.tripit.access_url = url('/access_url')
-          var authorize = {oauth_token: 'token'}
-          var data = await oauth1.access(grant.config.tripit, {}, authorize)
-          t.ok(!/verifier/.test(data.raw.oauth))
-        })
+    it('scope - authorize - trello', async () => {
+      provider.on.authorize = ({query}) => {
+        t.deepEqual(query, {scope: 'a,b', oauth_token: 'token'})
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/trello'),
+        qs: {scope: 'a,b'},
+        cookie: {},
       })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
+      })
+    })
 
-      describe('getpocket', () => {
-        it('token', async () => {
-          grant.config.getpocket.access_url = url('/access_url')
-          grant.config.getpocket.key = 'key'
-          var request = {code: 'code'}
-          var data = await oauth1.access(grant.config.getpocket, request, {})
-          t.deepEqual(data.raw, {
-            accept: 'application/x-www-form-urlencoded',
-            form: {
-              consumer_key: 'key',
-              code: 'code'
-            }
-          })
-        })
+    it('custom_params - authorize - trello', async () => {
+      provider.on.authorize = ({query}) => {
+        t.deepEqual(query, {oauth_token: 'token', name: 'grant'})
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/trello'),
+        // request-compose:querystring can't handle nested objects
+        qs: 'custom_params%5Bname%5D=grant',
+        cookie: {},
       })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
+      })
+    })
 
-      describe('subdomain', () => {
-        it('freshbooks', async () => {
-          grant.config.freshbooks.access_url = url('/[subdomain]')
-          grant.config.freshbooks.subdomain = 'access_url'
-          var data = await oauth1.access(grant.config.freshbooks, {}, {oauth_token: 'token'})
-          t.ok(/oauth_signature_method="PLAINTEXT"/.test(data.raw.oauth))
-        })
+    it('oauth_verifier - access - goodreads', async () => {
+      provider.on.access = ({oauth}) => {
+        t.equal(oauth.oauth_verifier, undefined)
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/goodreads'),
+        cookie: {},
       })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
+      })
+    })
 
-      describe('realmId', () => {
-        it('intuit', async () => {
-          grant.config.intuit.access_url = url('/access_url')
-          var authorize = {oauth_token: 'token', realmId: '123'}
-          var data = await oauth1.access(grant.config.intuit, {}, authorize)
-          t.equal(data.raw.realmId, '123')
-        })
+    it('realmId - access - intuit', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/intuit'),
+        cookie: {},
       })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret', realmId: '123'}
+      })
+    })
 
-      after((done) => {
-        server.close(done)
+    it('oauth_callback - authorize, oauth_verifier - access - tripit', async () => {
+      provider.on.authorize = ({query}) => {
+        t.deepEqual(query, {
+          oauth_callback: 'http://localhost:5001/connect/tripit/callback',
+          oauth_token: 'token'
+        })
+      }
+      provider.on.access = ({oauth}) => {
+        t.equal(oauth.oauth_verifier, undefined)
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/tripit'),
+        cookie: {},
       })
+      t.deepEqual(response, {
+        access_token: 'token',
+        access_secret: 'secret',
+        raw: {oauth_token: 'token', oauth_token_secret: 'secret'}
+      })
+    })
+
+    it('custom - request/authorize/access - getpocket', async () => {
+      provider.on.request = ({headers, form}) => {
+        t.equal(headers['x-accept'], 'application/x-www-form-urlencoded')
+        t.deepEqual(form, {
+          consumer_key: 'key',
+          state: 'state',
+          redirect_uri: 'http://localhost:5001/connect/getpocket/callback',
+        })
+      }
+      provider.on.authorize = ({query}) => {
+        t.deepEqual(query, {
+          request_token: 'code',
+          redirect_uri: 'http://localhost:5001/connect/getpocket/callback'
+        })
+      }
+      provider.on.access = ({headers, form}) => {
+        t.equal(headers['x-accept'], 'application/x-www-form-urlencoded')
+        t.deepEqual(form, {
+          consumer_key: 'key',
+          code: 'code'
+        })
+      }
+      var {body: {response}} = await request({
+        url: client.url('/connect/getpocket'),
+        qs: {key: 'key', state: 'state'},
+        cookie: {},
+      })
+      t.deepEqual(response, {
+        access_token: 'token',
+        raw: {access_token: 'token'}
+      })
+    })
+  })
+
+  describe('error', () => {
+    it('request - missing oauth_token with response message', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {request_url: provider.url('/request_error_message')},
+        cookie: {},
+      })
+      t.deepEqual(response, {error: {message: 'invalid'}})
+    })
+
+    it('request - status code', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {request_url: provider.url('/request_error_status')},
+        cookie: {},
+      })
+      t.deepEqual(response, {error: {invalid: 'request_url'}})
+    })
+
+    it('request - missing oauth_token without response message', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {request_url: provider.url('/request_error_token')},
+        cookie: {},
+      })
+      t.deepEqual(response, {error: 'Grant: OAuth1 missing oauth_token parameter'})
+    })
+
+    it('authorize - mising oauth_token with response message', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {authorize_url: provider.url('/authorize_error_message')},
+        cookie: {},
+      })
+      t.deepEqual(response, {error: {message: 'invalid'}})
+    })
+
+    it('authorize - mising oauth_token without error message', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {authorize_url: provider.url('/authorize_error_token')},
+        cookie: {},
+      })
+      t.deepEqual(response, {error: 'Grant: OAuth1 missing oauth_token parameter'})
+    })
+
+    it('access - status code', async () => {
+      var {body: {response}} = await request({
+        url: client.url('/connect/twitter'),
+        qs: {access_url: provider.url('/access_error_status')},
+        cookie: {},
+      })
+      t.deepEqual(response, {error: {invalid: 'access_url'}})
     })
   })
 })

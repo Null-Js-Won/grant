@@ -45,14 +45,6 @@ describe('config', () => {
       var result = config.filter({state: true, foo: true})
       t.deepEqual(result, {state: true})
     })
-    it('custom_parameters', () => {
-      var result = config.filter({custom_parameters: ['foo'], foo: true})
-      t.deepEqual(result, {custom_parameters: ['foo'], foo: true})
-    })
-    it('static overrides', () => {
-      var result = config.filter({obj: {}})
-      t.deepEqual(result, {obj: {}})
-    })
   })
 
   describe('format', () => {
@@ -118,13 +110,17 @@ describe('config', () => {
           'http://localhost:3000/connect/grant/callback',
         ],
         [
-          {protocol: 'https', host: 'outofindex.com', name: 'grant'},
-          'https://outofindex.com/connect/grant/callback',
+          {origin: 'http://localhost:3000', prefix: '/oauth', name: 'grant'},
+          'http://localhost:3000/oauth/grant/callback',
         ],
         [
-          {protocol: 'https', host: 'outofindex.com', path: '/prefix', name: 'grant'},
-          'https://outofindex.com/prefix/connect/grant/callback',
-        ]
+          {origin: 'http://localhost:3000', prefix: '', name: 'grant'},
+          'http://localhost:3000/grant/callback',
+        ],
+        [
+          {protocol: 'https', host: 'outofindex.com', prefix: '/oauth', name: 'grant'},
+          'https://outofindex.com/oauth/grant/callback',
+        ],
       ].forEach(([provider, result, message]) => {
         t.deepEqual(config.format.redirect_uri(provider), result, message)
       })
@@ -142,30 +138,10 @@ describe('config', () => {
           'return undefined on empty custom_params'
         ],
         [
-          {custom_parameters: ['name'], name: 'grant'},
-          undefined,
-          'filter out reserved keys'
-        ],
-        [
-          {custom_parameters: ['grant'], name: 'grant', grant: true},
-          undefined,
-          'filter out provider name set as key'
-        ],
-        [
-          {custom_parameters: ['a'], a: {}},
-          undefined,
-          'filter out object keys'
-        ],
-        [
-          {custom_parameters: ['a'], a: '', custom_params: {b: ''}},
-          undefined,
-          'filter out falsy values'
-        ],
-        [
-          {custom_parameters: ['a', 'b'], a: 1, b: 2, custom_params: {b: 3, c: 4}},
-          {a: 1, b: 3, c: 4},
-          'custom_params override custom_parameters'
-        ],
+          {custom_params: {a: 1, b: 2}},
+          {a: 1, b: 2},
+          'return custom_params'
+        ]
       ].forEach(([provider, result, message]) => {
         t.deepEqual(config.format.custom_params(provider), result, message)
       })
@@ -183,28 +159,13 @@ describe('config', () => {
           'return undefined on empty overrides'
         ],
         [
-          {name: {a: 1}},
-          undefined,
-          'filter out reserved keys'
+          {overrides: {a: {scope: 1}}},
+          {a: {scope: 1}},
+          'return overrides'
         ],
         [
-          {name: 'grant', grant: {a: 1}},
-          undefined,
-          'filter out provider name set as key'
-        ],
-        [
-          {a: 1, b: 2},
-          undefined,
-          'filter out non object keys'
-        ],
-        [
-          {a: {dynamic: [1]}, b: {dynamic: [2]}, overrides: {b: {dynamic: [3]}, c: {dynamic: [4]}}},
-          {a: {dynamic: [1]}, b: {dynamic: [3]}, c: {dynamic: [4]}},
-          'overrides override direct object keys'
-        ],
-        [
-          {a: {nested: {scope: 1}}, overrides: {b: {nested: {scope: 2}, overrides: {c: {scope: 3}}}}},
-          {a: {}, b: {}},
+          {overrides: {a: {scope: 1, overrides: {b: {scope: 1}}}}},
+          {a: {scope: 1}},
           'filter out nested overrides'
         ],
       ].forEach(([provider, result, message]) => {
@@ -217,16 +178,30 @@ describe('config', () => {
     it('state', () => {
       t.equal(config.state({state: '123'}), '123')
       t.equal(config.state({state: 123}), '123')
-      t.ok(/^[a-fA-F0-9]+/.test(config.state({state: true})))
+      t.ok(/^[a-f0-9]+/.test(config.state({state: true})))
+      t.ok(/^[a-f0-9]+/.test(config.state({state: 'true'})))
       t.equal(config.state({state: false}), undefined)
+      t.equal(config.state({state: 'false'}), undefined)
       t.equal(config.state({}), undefined)
     })
     it('nonce', () => {
       t.equal(config.state({nonce: '123'}, 'nonce'), '123')
       t.equal(config.state({nonce: 123}, 'nonce'), '123')
-      t.ok(/^[a-fA-F0-9]+/.test(config.state({nonce: true}, 'nonce')))
+      t.ok(/^[a-f0-9]+/.test(config.state({nonce: true}, 'nonce')))
+      t.ok(/^[a-f0-9]+/.test(config.state({nonce: 'true'}, 'nonce')))
       t.equal(config.state({nonce: false}, 'nonce'), undefined)
+      t.equal(config.state({nonce: 'false'}, 'nonce'), undefined)
       t.equal(config.state({}, 'nonce'), undefined)
+    })
+  })
+
+  describe('pkce', () => {
+    it('pkce', () => {
+      var {code_verifier, code_challenge} = config.pkce()
+      t.ok(typeof code_verifier === 'string')
+      t.ok(/[a-z0-9]{80}/.test(code_verifier))
+      t.ok(typeof code_challenge === 'string')
+      t.equal(code_challenge.length, 43)
     })
   })
 
@@ -234,34 +209,35 @@ describe('config', () => {
     it('transform', () => {
       t.deepEqual(
         config.transform({
-          protocol: 'http', host: 'localhost:3000',
-          oauth: '2', client_id: 'key', client_secret: 'secret',
+          origin: 'http://localhost:3000', prefix: '/oauth',
+          oauth: 2, client_id: 'key', client_secret: 'secret',
           state: true, nonce: false,
-          custom_parameters: ['team'], team: 'github',
-          sub: {state: false, nonce: false}
+          custom_params: {team: 'github'},
+          dynamic: ['scope'],
+          overrides: {
+            sub: {state: false, nonce: true, dynamic: ['callback']}
+          },
+          name: 'github', github: true
         }),
         {
-          protocol: 'http',
-          host: 'localhost:3000',
-          oauth: 2,
-          client_id: 'key',
-          client_secret: 'secret',
+          origin: 'http://localhost:3000', prefix: '/oauth',
+          oauth: 2, key: 'key', secret: 'secret',
+          client_id: 'key', client_secret: 'secret',
           state: true,
-          custom_parameters: ['team'],
-          key: 'key',
-          secret: 'secret',
           custom_params: {team: 'github'},
+          dynamic: ['scope'],
+          redirect_uri: 'http://localhost:3000/oauth/github/callback',
+          name: 'github', github: true,
           overrides: {
             sub: {
-              protocol: 'http',
-              host: 'localhost:3000',
-              oauth: 2,
-              client_id: 'key',
-              client_secret: 'secret',
-              custom_parameters: ['team'],
-              key: 'key',
-              secret: 'secret',
-              custom_params: {team: 'github'}
+              origin: 'http://localhost:3000', prefix: '/oauth',
+              oauth: 2, key: 'key', secret: 'secret',
+              client_id: 'key', client_secret: 'secret',
+              nonce: true,
+              dynamic: ['callback'],
+              custom_params: {team: 'github'},
+              redirect_uri: 'http://localhost:3000/oauth/github/callback',
+              name: 'github', github: true,
             }
           }
         }
@@ -270,7 +246,7 @@ describe('config', () => {
   })
 
   describe('compat', () => {
-    it('oauth1 to oauth2', () => {
+    it('fitbit2 - oauth1 to oauth2', () => {
       var input = {fitbit2: {key: 'key', secret: 'secret'}}
       var output = config.compat(input)
       t.deepEqual(
@@ -283,9 +259,32 @@ describe('config', () => {
           fitbit2: {
             authorize_url: 'https://www.fitbit.com/oauth2/authorize',
              access_url: 'https://api.fitbit.com/oauth2/token',
+             profile_url: 'https://api.fitbit.com/1/user/-/profile.json',
              oauth: 2,
              scope_delimiter: ' ',
-             custom_parameters: ['prompt'],
+             key: 'key',
+             secret: 'secret'
+           }
+         },
+        'output config should be merged with oauth.fitbit'
+      )
+    })
+    it('linkedin2 - oauth1 to oauth2', () => {
+      var input = {linkedin2: {key: 'key', secret: 'secret'}}
+      var output = config.compat(input)
+      t.deepEqual(
+        input,
+        {linkedin2: {key: 'key', secret: 'secret'}},
+        'input config should be unchanged'
+      )
+      t.deepEqual(
+        output, {
+          linkedin2: {
+            authorize_url: 'https://www.linkedin.com/oauth/v2/authorization',
+             access_url: 'https://www.linkedin.com/oauth/v2/accessToken',
+             profile_url: 'https://api.linkedin.com/v1/people/~',
+             oauth: 2,
+             scope_delimiter: ' ',
              key: 'key',
              secret: 'secret'
            }
@@ -301,24 +300,18 @@ describe('config', () => {
         defaults: {protocol: 'http', host: 'localhost:3000'},
         facebook: {state: true, scope: ['openid']}
       })
-      var server = config({
-        defaults: {protocol: 'http', host: 'localhost:3000'},
-        facebook: {state: true, scope: ['openid']}
-      })
-      t.deepEqual(defaults, server)
       t.deepEqual(defaults, {
-        defaults: {protocol: 'http', host: 'localhost:3000'},
+        defaults: {protocol: 'http', host: 'localhost:3000', prefix: '/connect'},
         facebook: {
           authorize_url: 'https://www.facebook.com/dialog/oauth',
           access_url: 'https://graph.facebook.com/oauth/access_token',
+          profile_url: 'https://graph.facebook.com/me',
           oauth: 2,
-          protocol: 'http',
-          host: 'localhost:3000',
+          protocol: 'http', host: 'localhost:3000', prefix: '/connect',
           state: true,
           scope: 'openid',
-          name: 'facebook',
-          facebook: true,
-          redirect_uri: 'http://localhost:3000/connect/facebook/callback'
+          redirect_uri: 'http://localhost:3000/connect/facebook/callback',
+          name: 'facebook', facebook: true
         }
       })
     })
@@ -330,18 +323,43 @@ describe('config', () => {
         }
       })
       t.deepEqual(nodefaults, {
+        defaults: {prefix: '/connect'},
         facebook: {
           authorize_url: 'https://www.facebook.com/dialog/oauth',
           access_url: 'https://graph.facebook.com/oauth/access_token',
+          profile_url: 'https://graph.facebook.com/me',
           oauth: 2,
-          protocol: 'http',
-          host: 'localhost:3000',
+          protocol: 'http', host: 'localhost:3000', prefix: '/connect',
           state: true,
           scope: 'openid',
-          name: 'facebook',
-          facebook: true,
-          redirect_uri: 'http://localhost:3000/connect/facebook/callback'
+          redirect_uri: 'http://localhost:3000/connect/facebook/callback',
+          name: 'facebook', facebook: true
         }
+      })
+    })
+  })
+
+  describe('defaults', () => {
+    it('prefix', () => {
+      ;[
+        [
+          {},
+          {prefix: '/connect'}
+        ],
+        [
+          {prefix: '/oauth'},
+          {prefix: '/oauth'}
+        ],
+        [
+          {path: '/api'},
+          {prefix: '/api/connect'}
+        ],
+        [
+          {path: '/api', prefix: '/oauth'},
+          {prefix: '/api/oauth'}
+        ]
+      ].forEach(([provider, result, message]) => {
+        t.deepEqual(config.defaults(provider), result, message)
       })
     })
   })
@@ -352,7 +370,9 @@ describe('config', () => {
       var session = {provider: 'grant'}
       t.deepEqual(
         config.provider(options, session),
-        {name: 'grant', grant: true}
+        {
+          prefix: '/connect', name: 'grant', grant: true
+        }
       )
     })
     it('dynamic provider - defaults to false', () => {
@@ -370,7 +390,9 @@ describe('config', () => {
         config.provider(options, session), {
           authorize_url: 'https://www.facebook.com/dialog/oauth',
           access_url: 'https://graph.facebook.com/oauth/access_token',
+          profile_url: 'https://graph.facebook.com/me',
           oauth: 2,
+          prefix: '/connect',
           dynamic: true,
           name: 'facebook',
           facebook: true
@@ -382,15 +404,21 @@ describe('config', () => {
       var session = {provider: 'grant'}
       t.deepEqual(
         config.provider(options, session),
-        {dynamic: true, name: 'grant', grant: true}
+        {
+          dynamic: true,
+          prefix: '/connect', name: 'grant', grant: true
+        }
       )
     })
     it('static override', () => {
-      var options = config({grant: {sub: {state: 'purest'}}})
+      var options = config({grant: {overrides: {sub: {state: 'purest'}}}})
       var session = {provider: 'grant', override: 'sub'}
       t.deepEqual(
         config.provider(options, session),
-        {name: 'grant', grant: true, state: 'purest'}
+        {
+          state: 'purest',
+          prefix: '/connect', name: 'grant', grant: true
+        }
       )
     })
     it('dynamic params - true', () => {
@@ -398,11 +426,20 @@ describe('config', () => {
       var session = {provider: 'grant', dynamic: {state: 'purest'}}
       t.deepEqual(
         config.provider(options, session),
-        {dynamic: true, name: 'grant', grant: true, state: 'purest'}
+        {
+          dynamic: true, state: 'purest',
+          prefix: '/connect', name: 'grant', grant: true
+        }
       )
       t.deepEqual(
         options,
-        {grant: {dynamic: true, name: 'grant', grant: true, state: 'grant'}}
+        {
+          defaults: {prefix: '/connect'},
+          grant: {
+            dynamic: true, state: 'grant',
+            prefix: '/connect', name: 'grant', grant: true
+          }
+        }
       )
     })
     it('dynamic params - array', () => {
@@ -410,11 +447,63 @@ describe('config', () => {
       var session = {provider: 'grant', dynamic: {state: 'purest', scope: 'purest'}}
       t.deepEqual(
         config.provider(options, session),
-        {dynamic: ['state'], name: 'grant', grant: true, state: 'purest', scope: 'grant'}
+        {
+          dynamic: ['state'], state: 'purest', scope: 'grant',
+          prefix: '/connect', name: 'grant', grant: true
+        }
       )
       t.deepEqual(
         options,
-        {grant: {dynamic: ['state'], name: 'grant', grant: true, state: 'grant', scope: 'grant'}}
+        {
+          defaults: {prefix: '/connect'},
+          grant: {
+            dynamic: ['state'], state: 'grant', scope: 'grant',
+            prefix: '/connect', name: 'grant', grant: true
+          }
+        }
+      )
+    })
+    it('state - dynamic', () => {
+      var options = config({grant: {}})
+      var session = {provider: 'grant'}
+      var state = {dynamic: {state: 's1'}}
+      t.deepEqual(
+        config.provider(options, session, state),
+        {
+          state: 's1',
+          prefix: '/connect', name: 'grant', grant: true
+        }
+      )
+      t.deepEqual(
+        options,
+        {
+          defaults: {prefix: '/connect'},
+          grant: {prefix: '/connect', name: 'grant', grant: true}
+        }
+      )
+    })
+    it('state - dynamic + session dynamic', () => {
+      var options = config({grant: {oauth: 2, dynamic: ['state', 'scope']}})
+      var session = {provider: 'grant', dynamic:
+        {key: 'session', secret: 'session', state: 'session', scope: ['session']}}
+      var state = {dynamic: {key: 'state', secret: 'state', state: 'state'}}
+      t.deepEqual(
+        config.provider(options, session, state),
+        {
+          oauth: 2, dynamic: ['state', 'scope'],
+          key: 'state', secret: 'state', state: 'session', scope: 'session',
+          prefix: '/connect', name: 'grant', grant: true
+        }
+      )
+      t.deepEqual(
+        options,
+        {
+          defaults: {prefix: '/connect'},
+          grant: {
+            oauth: 2, dynamic: ['state', 'scope'],
+            prefix: '/connect', name: 'grant', grant: true
+          }
+        }
       )
     })
     it('state', () => {
@@ -422,14 +511,51 @@ describe('config', () => {
       var session = {provider: 'grant'}
       var result = config.provider(options, session)
       t.ok(/^[a-fA-F0-9]+$/.test(result.state))
-      t.deepEqual(options, {grant: {name: 'grant', grant: true, state: true}})
+      t.deepEqual(
+        options,
+        {
+          defaults: {prefix: '/connect'},
+          grant: {
+            state: true,
+            prefix: '/connect', name: 'grant', grant: true
+          }
+        }
+      )
     })
     it('nonce', () => {
       var options = config({grant: {nonce: true}})
       var session = {provider: 'grant'}
       var result = config.provider(options, session)
       t.ok(/^[a-fA-F0-9]+$/.test(result.nonce))
-      t.deepEqual(options, {grant: {name: 'grant', grant: true, nonce: true}})
+      t.deepEqual(
+        options,
+        {
+          defaults: {prefix: '/connect'},
+          grant: {
+            nonce: true,
+            prefix: '/connect', name: 'grant', grant: true
+          }
+        }
+      )
+    })
+    it('pkce', () => {
+      var options = config({grant: {pkce: true}})
+      var session = {provider: 'grant'}
+      var result = config.provider(options, session)
+      t.ok(typeof result.code_verifier === 'string')
+      t.ok(/^[a-z0-9]{80}$/.test(result.code_verifier))
+      t.ok(typeof result.code_challenge === 'string')
+      t.equal(result.code_challenge.length, 43)
+      t.deepEqual(
+        options,
+        {
+          defaults: {prefix: '/connect'},
+          grant: {
+            pkce: true,
+            prefix: '/connect', name: 'grant', grant: true
+          }
+        }
+      )
     })
   })
 
